@@ -40,11 +40,10 @@ async function getBrowser() {
   }
 }
 
-async function runAttendance() {
-  const logs = [];
+async function runAttendance(onLog) {
   const log = (msg) => {
     console.log(msg);
-    logs.push(msg);
+    if (onLog) onLog(msg);
   };
 
   log("Starting attendance process...");
@@ -196,7 +195,6 @@ async function runAttendance() {
       await browser.close();
     }
   }
-  return logs;
 }
 
 app.get('/', (req, res) => {
@@ -368,28 +366,37 @@ app.get('/', (req, res) => {
           logsDiv.scrollTop = logsDiv.scrollHeight;
         }
 
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => {
           btn.disabled = true;
           loader.style.display = 'inline-block';
           btnText.textContent = 'Processing...';
           logsDiv.innerHTML = '';
-          appendLog('Initiating request to server...');
+          appendLog('Connecting to server...');
 
-          try {
-            const response = await fetch('/run-attendance');
-            const data = await response.json();
+          const eventSource = new EventSource('/run-attendance');
+
+          eventSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
             
-            logsDiv.innerHTML = '';
-            data.logs.forEach(log => appendLog(log));
-            
-            appendLog('Process completed.', 'success');
-          } catch (error) {
-            appendLog('Failed to connect to server: ' + error.message, 'error');
-          } finally {
+            if (data.done) {
+              appendLog(data.message, data.error ? 'error' : 'success');
+              eventSource.close();
+              btn.disabled = false;
+              loader.style.display = 'none';
+              btnText.textContent = 'Start Automation';
+              return;
+            }
+
+            appendLog(data.message);
+          };
+
+          eventSource.onerror = function() {
+            appendLog('Connection to server lost or error occurred.', 'error');
+            eventSource.close();
             btn.disabled = false;
             loader.style.display = 'none';
             btnText.textContent = 'Start Automation';
-          }
+          };
         });
       </script>
     </body>
@@ -398,8 +405,21 @@ app.get('/', (req, res) => {
 });
 
 app.get('/run-attendance', async (req, res) => {
-  const logs = await runAttendance();
-  res.json({ logs });
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  try {
+    await runAttendance((msg) => {
+      res.write(`data: ${JSON.stringify({ message: msg })}\n\n`);
+      if (res.flush) res.flush(); // For environments that support compression/flushing
+    });
+    res.write(`data: ${JSON.stringify({ message: "Process completed.", done: true })}\n\n`);
+  } catch (error) {
+    res.write(`data: ${JSON.stringify({ message: "Error: " + error.message, error: true, done: true })}\n\n`);
+  } finally {
+    res.end();
+  }
 });
 
 if (require.main === module) {
