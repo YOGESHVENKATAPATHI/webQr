@@ -1,6 +1,6 @@
 const express = require("express");
 const app = express();
-const puppeteer = require("puppeteer");
+
 
 // For Vercel production:
 // Vercel serverless functions have a 50MB size limit. 
@@ -32,6 +32,7 @@ async function getBrowser() {
       ignoreHTTPSErrors: true,
     });
   } else {
+    const puppeteer = require("puppeteer");
     return await puppeteer.launch({
       headless: false, // run headlessly
       args: ['--no-sandbox', '--disable-setuid-sandbox']
