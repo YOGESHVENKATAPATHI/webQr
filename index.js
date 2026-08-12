@@ -53,13 +53,11 @@ async function runAttendance(onLog) {
     browser = await getBrowser();
     // We create a temporary page just to fetch the initial target URL
     const tempPage = await browser.newPage();
-    // Spoof User-Agent to prevent Google bot detection on Vercel
-    await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
     tempPage.setDefaultNavigationTimeout(60000);
 
     const getNewTargetUrl = async (workerPage) => {
       log("Navigating to start URL to fetch QR...");
-      const response = await workerPage.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      const response = await workerPage.goto(startUrl, { waitUntil: 'domcontentloaded' });
       const html = await response.text();
 
       const qrRegex = /quickchart\.io(?:\\\/|\/)qr\?text(?:=|\\x3d|%3D)([^&\\"]+)/i;
@@ -72,12 +70,11 @@ async function runAttendance(onLog) {
       } else {
         log("Regex failed. Trying fallback extraction from iframe DOM...");
         try {
-          // Increased timeout to 30s to allow heavy GAS iframes to load
-          await workerPage.waitForSelector('iframe#sandboxFrame', { timeout: 30000 });
+          await workerPage.waitForSelector('iframe#sandboxFrame', { timeout: 10000 });
           const frameElement = await workerPage.$('iframe#sandboxFrame');
           const frame = await frameElement.contentFrame();
 
-          await frame.waitForFunction(() => document.body.innerHTML.includes("quickchart.io"), { timeout: 30000 });
+          await frame.waitForFunction(() => document.body.innerHTML.includes("quickchart.io"), { timeout: 10000 });
           const frameHtml = await frame.content();
 
           const frameMatch = frameHtml.match(/quickchart\.io\/qr\?text=([^&"']+)/i);
@@ -115,74 +112,73 @@ async function runAttendance(onLog) {
 
     const processStudent = async (studentId) => {
       const studentPage = await browser.newPage();
-      await studentPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
       studentPage.setDefaultNavigationTimeout(60000);
       let success = false;
       let currentUrl = initialTargetUrl;
 
       while (!success) {
-        try {
-          log(`Processing student ID: ${studentId}`);
-          await studentPage.goto(currentUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        log(`Processing student ID: ${studentId}`);
+        await studentPage.goto(currentUrl, { waitUntil: 'networkidle2' });
 
-          log(`Waiting for input box for ${studentId}...`);
-          const { frame: inputFrame, el: inputEl } = await waitForSelectorInAnyFrame(studentPage, 'input#studentid', 40000);
+        log(`Waiting for input box for ${studentId}...`);
+        const { frame: inputFrame, el: inputEl } = await waitForSelectorInAnyFrame(studentPage, 'input#studentid');
 
-          await inputFrame.evaluate((el) => el.value = '', inputEl);
-          await inputEl.type(studentId);
+        await inputFrame.evaluate((el) => el.value = '', inputEl);
+        await inputEl.type(studentId);
 
-          log(`Clicking submit for ${studentId}...`);
-          const { frame: buttonFrame, el: buttonEl } = await waitForSelectorInAnyFrame(studentPage, 'button[onclick="submitAttendance()"]', 40000);
-          await buttonEl.click();
+        log(`Clicking submit for ${studentId}...`);
+        const { frame: buttonFrame, el: buttonEl } = await waitForSelectorInAnyFrame(studentPage, 'button[onclick="submitAttendance()"]');
+        await buttonEl.click();
 
-          log(`Waiting for result for ${studentId}...`);
+        log(`Waiting for result for ${studentId}...`);
 
-          let resultText = "";
-          const startTime = Date.now();
-          while (Date.now() - startTime < 45000 && !resultText) {
-            for (const frame of studentPage.frames()) {
-              try {
-                const text = await frame.evaluate(() => {
-                  const h2 = document.querySelector('#msg h2') || document.querySelector('#msg');
-                  return h2 ? h2.innerText.trim() : "";
-                });
-                if (text) {
-                  resultText = text;
-                  break;
-                }
-              } catch (e) { }
-            }
-            if (!resultText) await new Promise(r => setTimeout(r, 500));
+        let resultText = "";
+        const startTime = Date.now();
+        while (Date.now() - startTime < 30000 && !resultText) {
+          for (const frame of studentPage.frames()) {
+            try {
+              const text = await frame.evaluate(() => {
+                const h2 = document.querySelector('#msg h2') || document.querySelector('#msg');
+                return h2 ? h2.innerText.trim() : "";
+              });
+              if (text) {
+                resultText = text;
+                break;
+              }
+            } catch (e) { }
           }
+          if (!resultText) await new Promise(r => setTimeout(r, 500));
+        }
 
-          if (!resultText) {
-            log(`Warning: Could not read result text for ${studentId}, assuming success to avoid infinite loop.`);
-            success = true;
-            continue;
-          }
+        if (!resultText) {
+          log(`Warning: Could not read result text for ${studentId}, assuming success to avoid infinite loop.`);
+          success = true;
+          continue;
+        }
 
-          log(`Result for ${studentId}: ${resultText}`);
+        log(`Result for ${studentId}: ${resultText}`);
 
-          if (resultText.includes("QR Code Expired") || resultText.includes("Please scan latest QR")) {
-            log(`QR expired for ${studentId}. Fetching new QR...`);
-            currentUrl = await getNewTargetUrl(studentPage);
-          } else if (resultText.includes("Attendance Recorded Successfully") || resultText.includes("Successfully") || resultText.includes("Recorded") || resultText.includes("already")) {
-            log(`Successfully processed ${studentId}.`);
-            success = true;
-          } else {
-            log(`Unknown result for ${studentId}, assuming success to continue loop: ${resultText}`);
-            success = true;
-          }
-        } catch (err) {
-          log(`Warning: Error processing ${studentId} (${err.message}). Retrying...`);
-          await new Promise(r => setTimeout(r, 3000));
+        if (resultText.includes("QR Code Expired") || resultText.includes("Please scan latest QR")) {
+          log(`QR expired for ${studentId}. Fetching new QR...`);
+          currentUrl = await getNewTargetUrl(studentPage);
+        } else if (resultText.includes("Attendance Recorded Successfully") || resultText.includes("Successfully") || resultText.includes("Recorded") || resultText.includes("already")) {
+          log(`Successfully processed ${studentId}.`);
+          success = true;
+        } else {
+          log(`Unknown result for ${studentId}, assuming success to continue loop: ${resultText}`);
+          success = true;
         }
       }
       await studentPage.close();
     };
 
-    // Run all students in parallel!
-    await Promise.all(studentIds.map(id => processStudent(id)));
+    // Run students in batches of 3 to prevent timeouts and CPU overload
+    const batchSize = 3;
+    for (let i = 0; i < studentIds.length; i += batchSize) {
+      const batch = studentIds.slice(i, i + batchSize);
+      log(`--- Starting batch processing for ${batch.length} students ---`);
+      await Promise.all(batch.map(id => processStudent(id)));
+    }
 
     log("All student IDs processed successfully.");
   } catch (error) {
