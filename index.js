@@ -53,11 +53,13 @@ async function runAttendance(onLog) {
     browser = await getBrowser();
     // We create a temporary page just to fetch the initial target URL
     const tempPage = await browser.newPage();
+    // Spoof User-Agent to prevent Google bot detection on Vercel
+    await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
     tempPage.setDefaultNavigationTimeout(60000);
 
     const getNewTargetUrl = async (workerPage) => {
       log("Navigating to start URL to fetch QR...");
-      const response = await workerPage.goto(startUrl, { waitUntil: 'domcontentloaded' });
+      const response = await workerPage.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
       const html = await response.text();
 
       const qrRegex = /quickchart\.io(?:\\\/|\/)qr\?text(?:=|\\x3d|%3D)([^&\\"]+)/i;
@@ -70,11 +72,12 @@ async function runAttendance(onLog) {
       } else {
         log("Regex failed. Trying fallback extraction from iframe DOM...");
         try {
-          await workerPage.waitForSelector('iframe#sandboxFrame', { timeout: 10000 });
+          // Increased timeout to 30s to allow heavy GAS iframes to load
+          await workerPage.waitForSelector('iframe#sandboxFrame', { timeout: 30000 });
           const frameElement = await workerPage.$('iframe#sandboxFrame');
           const frame = await frameElement.contentFrame();
 
-          await frame.waitForFunction(() => document.body.innerHTML.includes("quickchart.io"), { timeout: 10000 });
+          await frame.waitForFunction(() => document.body.innerHTML.includes("quickchart.io"), { timeout: 30000 });
           const frameHtml = await frame.content();
 
           const frameMatch = frameHtml.match(/quickchart\.io\/qr\?text=([^&"']+)/i);
@@ -112,6 +115,7 @@ async function runAttendance(onLog) {
 
     const processStudent = async (studentId) => {
       const studentPage = await browser.newPage();
+      await studentPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
       studentPage.setDefaultNavigationTimeout(60000);
       let success = false;
       let currentUrl = initialTargetUrl;
