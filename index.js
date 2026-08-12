@@ -117,56 +117,61 @@ async function runAttendance(onLog) {
       let currentUrl = initialTargetUrl;
 
       while (!success) {
-        log(`Processing student ID: ${studentId}`);
-        await studentPage.goto(currentUrl, { waitUntil: 'networkidle2' });
+        try {
+          log(`Processing student ID: ${studentId}`);
+          await studentPage.goto(currentUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-        log(`Waiting for input box for ${studentId}...`);
-        const { frame: inputFrame, el: inputEl } = await waitForSelectorInAnyFrame(studentPage, 'input#studentid');
+          log(`Waiting for input box for ${studentId}...`);
+          const { frame: inputFrame, el: inputEl } = await waitForSelectorInAnyFrame(studentPage, 'input#studentid', 40000);
 
-        await inputFrame.evaluate((el) => el.value = '', inputEl);
-        await inputEl.type(studentId);
+          await inputFrame.evaluate((el) => el.value = '', inputEl);
+          await inputEl.type(studentId);
 
-        log(`Clicking submit for ${studentId}...`);
-        const { frame: buttonFrame, el: buttonEl } = await waitForSelectorInAnyFrame(studentPage, 'button[onclick="submitAttendance()"]');
-        await buttonEl.click();
+          log(`Clicking submit for ${studentId}...`);
+          const { frame: buttonFrame, el: buttonEl } = await waitForSelectorInAnyFrame(studentPage, 'button[onclick="submitAttendance()"]', 40000);
+          await buttonEl.click();
 
-        log(`Waiting for result for ${studentId}...`);
+          log(`Waiting for result for ${studentId}...`);
 
-        let resultText = "";
-        const startTime = Date.now();
-        while (Date.now() - startTime < 30000 && !resultText) {
-          for (const frame of studentPage.frames()) {
-            try {
-              const text = await frame.evaluate(() => {
-                const h2 = document.querySelector('#msg h2') || document.querySelector('#msg');
-                return h2 ? h2.innerText.trim() : "";
-              });
-              if (text) {
-                resultText = text;
-                break;
-              }
-            } catch (e) { }
+          let resultText = "";
+          const startTime = Date.now();
+          while (Date.now() - startTime < 45000 && !resultText) {
+            for (const frame of studentPage.frames()) {
+              try {
+                const text = await frame.evaluate(() => {
+                  const h2 = document.querySelector('#msg h2') || document.querySelector('#msg');
+                  return h2 ? h2.innerText.trim() : "";
+                });
+                if (text) {
+                  resultText = text;
+                  break;
+                }
+              } catch (e) { }
+            }
+            if (!resultText) await new Promise(r => setTimeout(r, 500));
           }
-          if (!resultText) await new Promise(r => setTimeout(r, 500));
-        }
 
-        if (!resultText) {
-          log(`Warning: Could not read result text for ${studentId}, assuming success to avoid infinite loop.`);
-          success = true;
-          continue;
-        }
+          if (!resultText) {
+            log(`Warning: Could not read result text for ${studentId}, assuming success to avoid infinite loop.`);
+            success = true;
+            continue;
+          }
 
-        log(`Result for ${studentId}: ${resultText}`);
+          log(`Result for ${studentId}: ${resultText}`);
 
-        if (resultText.includes("QR Code Expired") || resultText.includes("Please scan latest QR")) {
-          log(`QR expired for ${studentId}. Fetching new QR...`);
-          currentUrl = await getNewTargetUrl(studentPage);
-        } else if (resultText.includes("Attendance Recorded Successfully") || resultText.includes("Successfully") || resultText.includes("Recorded") || resultText.includes("already")) {
-          log(`Successfully processed ${studentId}.`);
-          success = true;
-        } else {
-          log(`Unknown result for ${studentId}, assuming success to continue loop: ${resultText}`);
-          success = true;
+          if (resultText.includes("QR Code Expired") || resultText.includes("Please scan latest QR")) {
+            log(`QR expired for ${studentId}. Fetching new QR...`);
+            currentUrl = await getNewTargetUrl(studentPage);
+          } else if (resultText.includes("Attendance Recorded Successfully") || resultText.includes("Successfully") || resultText.includes("Recorded") || resultText.includes("already")) {
+            log(`Successfully processed ${studentId}.`);
+            success = true;
+          } else {
+            log(`Unknown result for ${studentId}, assuming success to continue loop: ${resultText}`);
+            success = true;
+          }
+        } catch (err) {
+          log(`Warning: Error processing ${studentId} (${err.message}). Retrying...`);
+          await new Promise(r => setTimeout(r, 3000));
         }
       }
       await studentPage.close();
