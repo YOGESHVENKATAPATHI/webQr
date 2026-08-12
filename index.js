@@ -14,6 +14,7 @@ const startUrl = "https://script.google.com/macros/s/AKfycbyTzeQc3hyLa9lWFG6cvgl
 
 const studentIds = [
   "SIT23CS144",
+  "SIT23CS199",
   "SIT23CS150",
   "SIT23CS219",
   "SIT23CS207",
@@ -50,39 +51,29 @@ async function runAttendance(onLog) {
   let browser = null;
   try {
     browser = await getBrowser();
-    const page = await browser.newPage();
+    // We create a temporary page just to fetch the initial target URL
+    const tempPage = await browser.newPage();
+    tempPage.setDefaultNavigationTimeout(60000);
 
-    // Setting longer timeout for navigation
-    page.setDefaultNavigationTimeout(60000);
-
-    const getNewTargetUrl = async () => {
+    const getNewTargetUrl = async (workerPage) => {
       log("Navigating to start URL to fetch QR...");
-
-      // Instead of relying on the DOM where the QR might disappear, we intercept the page source.
-      // Go to the start URL and get the raw HTML source
-      const response = await page.goto(startUrl, { waitUntil: 'domcontentloaded' });
+      const response = await workerPage.goto(startUrl, { waitUntil: 'domcontentloaded' });
       const html = await response.text();
 
-      // The HTML contains a JSON configuration with the userHtml string
-      // Example: https:\/\/quickchart.io\/qr?text\x3dhttps%3A%2F%2F...
-      // Google Apps Script heavily escapes characters, so '=' becomes '\x3d' or '\\x3d'
       const qrRegex = /quickchart\.io(?:\\\/|\/)qr\?text(?:=|\\x3d|%3D)([^&\\"]+)/i;
       const match = html.match(qrRegex);
 
       let targetUrl = null;
       if (match && match[1]) {
         targetUrl = decodeURIComponent(match[1]);
-        // Clean up any JSON escaped slashes
         targetUrl = targetUrl.replace(/\\\//g, '/');
       } else {
-        // Fallback: try looking into the frame if regex failed
         log("Regex failed. Trying fallback extraction from iframe DOM...");
         try {
-          await page.waitForSelector('iframe#sandboxFrame', { timeout: 10000 });
-          const frameElement = await page.$('iframe#sandboxFrame');
+          await workerPage.waitForSelector('iframe#sandboxFrame', { timeout: 10000 });
+          const frameElement = await workerPage.$('iframe#sandboxFrame');
           const frame = await frameElement.contentFrame();
 
-          // Wait briefly, get HTML and search
           await frame.waitForFunction(() => document.body.innerHTML.includes("quickchart.io"), { timeout: 10000 });
           const frameHtml = await frame.content();
 
@@ -95,15 +86,14 @@ async function runAttendance(onLog) {
         }
       }
 
-      if (!targetUrl) {
-        throw new Error("Could not extract target URL from QR.");
-      }
+      if (!targetUrl) throw new Error("Could not extract target URL from QR.");
 
-      log(`Extracted target URL: ${targetUrl}`);
       return targetUrl;
     };
 
-    let targetUrl = await getNewTargetUrl();
+    let initialTargetUrl = await getNewTargetUrl(tempPage);
+    log(`Extracted initial target URL: ${initialTargetUrl}`);
+    await tempPage.close();
 
     // Helper to wait for a selector across all frames (handles Google Apps Script iframe navigations)
     async function waitForSelectorInAnyFrame(page, selector, timeout = 25000) {
@@ -120,35 +110,32 @@ async function runAttendance(onLog) {
       throw new Error(`Timeout waiting for selector \`${selector}\` in any frame`);
     }
 
-    for (let i = 0; i < studentIds.length; i++) {
-      const studentId = studentIds[i];
+    const processStudent = async (studentId) => {
+      const studentPage = await browser.newPage();
+      studentPage.setDefaultNavigationTimeout(60000);
       let success = false;
+      let currentUrl = initialTargetUrl;
 
       while (!success) {
         log(`Processing student ID: ${studentId}`);
-        await page.goto(targetUrl, { waitUntil: 'networkidle2' });
+        await studentPage.goto(currentUrl, { waitUntil: 'networkidle2' });
 
-        // Wait for input box inside any frame
         log(`Waiting for input box for ${studentId}...`);
-        const { frame: inputFrame, el: inputEl } = await waitForSelectorInAnyFrame(page, 'input#studentid');
+        const { frame: inputFrame, el: inputEl } = await waitForSelectorInAnyFrame(studentPage, 'input#studentid');
 
-        // Clear input and type
         await inputFrame.evaluate((el) => el.value = '', inputEl);
         await inputEl.type(studentId);
 
-        // Click button
         log(`Clicking submit for ${studentId}...`);
-        const { frame: buttonFrame, el: buttonEl } = await waitForSelectorInAnyFrame(page, 'button[onclick="submitAttendance()"]');
+        const { frame: buttonFrame, el: buttonEl } = await waitForSelectorInAnyFrame(studentPage, 'button[onclick="submitAttendance()"]');
         await buttonEl.click();
 
-        // Wait for msg div and h tag to populate inside frame
         log(`Waiting for result for ${studentId}...`);
 
-        // Poll for the h2 tag text to appear in any frame
         let resultText = "";
         const startTime = Date.now();
         while (Date.now() - startTime < 30000 && !resultText) {
-          for (const frame of page.frames()) {
+          for (const frame of studentPage.frames()) {
             try {
               const text = await frame.evaluate(() => {
                 const h2 = document.querySelector('#msg h2') || document.querySelector('#msg');
@@ -173,19 +160,20 @@ async function runAttendance(onLog) {
 
         if (resultText.includes("QR Code Expired") || resultText.includes("Please scan latest QR")) {
           log(`QR expired for ${studentId}. Fetching new QR...`);
-          targetUrl = await getNewTargetUrl();
-          // The loop will retry the same student ID since success is still false
-        } else if (resultText.includes("Attendance Recorded Successfully") || resultText.includes("Successfully") || resultText.includes("Recorded")) {
-          // Assume success
+          currentUrl = await getNewTargetUrl(studentPage);
+        } else if (resultText.includes("Attendance Recorded Successfully") || resultText.includes("Successfully") || resultText.includes("Recorded") || resultText.includes("already")) {
           log(`Successfully processed ${studentId}.`);
           success = true;
         } else {
-          // Fallback case
           log(`Unknown result for ${studentId}, assuming success to continue loop: ${resultText}`);
           success = true;
         }
       }
-    }
+      await studentPage.close();
+    };
+
+    // Run all students in parallel!
+    await Promise.all(studentIds.map(id => processStudent(id)));
 
     log("All student IDs processed successfully.");
   } catch (error) {
