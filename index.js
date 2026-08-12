@@ -23,7 +23,7 @@ const studentIds = [
 async function getBrowser() {
   if (process.env.VERCEL) {
     const chromium = require("@sparticuz/chromium");
-    const puppeteerCore = require("puppeteer-core");
+    const { default: puppeteerCore } = await import("puppeteer-core");
     return await puppeteerCore.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
@@ -32,7 +32,7 @@ async function getBrowser() {
       ignoreHTTPSErrors: true,
     });
   } else {
-    const puppeteer = require("puppeteer");
+    const { default: puppeteer } = await import("puppeteer");
     return await puppeteer.launch({
       headless: false, // run headlessly
       args: ['--no-sandbox', '--disable-setuid-sandbox']
