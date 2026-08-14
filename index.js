@@ -16,7 +16,7 @@ const studentIds = [
   "SIT23CS144",
   "SIT23CS199",
   "SIT23CS150",
-  "SIT23CS219",
+  "SIT23CS222",
   "SIT23CS207",
   "SITL24CS03"
 ];
@@ -70,16 +70,20 @@ async function runAttendance(onLog) {
       } else {
         log("Regex failed. Trying fallback extraction from iframe DOM...");
         try {
-          await workerPage.waitForSelector('iframe#sandboxFrame', { timeout: 10000 });
-          const frameElement = await workerPage.$('iframe#sandboxFrame');
-          const frame = await frameElement.contentFrame();
-
-          await frame.waitForFunction(() => document.body.innerHTML.includes("quickchart.io"), { timeout: 10000 });
-          const frameHtml = await frame.content();
-
-          const frameMatch = frameHtml.match(/quickchart\.io\/qr\?text=([^&"']+)/i);
-          if (frameMatch && frameMatch[1]) {
-            targetUrl = decodeURIComponent(frameMatch[1]);
+          await workerPage.waitForSelector('iframe', { timeout: 30000 });
+          const startTime = Date.now();
+          while (Date.now() - startTime < 30000 && !targetUrl) {
+            for (const frame of workerPage.frames()) {
+              try {
+                const frameHtml = await frame.content();
+                const frameMatch = frameHtml.match(/quickchart\.io\/qr\?text=([^&"']+)/i);
+                if (frameMatch && frameMatch[1]) {
+                  targetUrl = decodeURIComponent(frameMatch[1]);
+                  break;
+                }
+              } catch (e) { }
+            }
+            if (!targetUrl) await new Promise(r => setTimeout(r, 1000));
           }
         } catch (e) {
           log("Fallback extraction failed: " + e.message);
